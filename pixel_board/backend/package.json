@@ -1,0 +1,14 @@
+{
+  "name": "pixel-board-backend",
+  "version": "0.1.0",
+  "description": "Backend WebSocket del Pixel Board (fase 1)",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "smoke": "node test/smoke.js"
+  },
+  "dependencies": {
+    "ws": "^8"
+  }
+}

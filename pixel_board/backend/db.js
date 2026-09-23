@@ -1,12 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
 
 /**
- * Persistencia SQLite (fase 5): el canvas y los usuarios sobreviven
- * reinicios del backend. La memoria sigue siendo la fuente de velocidad;
- * SQLite es solo respaldo.
- *
- * Identidad: el nickname es la clave única del usuario y pixels.updatedBy
- * apunta directo al nickname (cada pixel sabe quién lo pintó).
+ * Persistencia SQLite: usuarios, mensajes de chat (por sala),
+ * resultados de partidas y estadísticas.
  */
 class Db {
   constructor(path = process.env.DB_PATH || 'pixel_board.sqlite') {
@@ -17,78 +13,68 @@ class Db {
       CREATE TABLE IF NOT EXISTS users (
         nickname        TEXT PRIMARY KEY,
         token           TEXT NOT NULL,
-        pixelsRemaining INTEGER NOT NULL DEFAULT 5,
-        cooldownEndsAt  INTEGER,
+        password_hash   TEXT,
+        wins            INTEGER NOT NULL DEFAULT 0,
+        losses          INTEGER NOT NULL DEFAULT 0,
+        draws           INTEGER NOT NULL DEFAULT 0,
         createdAt       INTEGER NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS pixels (
-        x         INTEGER NOT NULL,
-        y         INTEGER NOT NULL,
-        color     TEXT NOT NULL DEFAULT '#FFFFFF',
-        updatedBy TEXT,
-        updatedAt INTEGER,
-        PRIMARY KEY (x, y),
-        FOREIGN KEY (updatedBy) REFERENCES users(nickname)
       );
 
       CREATE TABLE IF NOT EXISTS messages (
         id        INTEGER PRIMARY KEY AUTOINCREMENT,
-        nickname  TEXT NOT NULL REFERENCES users(nickname),
+        roomId    TEXT NOT NULL,
+        nickname  TEXT NOT NULL,
         text      TEXT NOT NULL,
         createdAt INTEGER NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS games (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        roomId          TEXT NOT NULL,
+        player1         TEXT NOT NULL,
+        player2         TEXT NOT NULL,
+        referenceImage  TEXT NOT NULL,
+        player1Canvas   TEXT NOT NULL,
+        player2Canvas   TEXT NOT NULL,
+        player1Score    INTEGER NOT NULL,
+        player2Score    INTEGER NOT NULL,
+        winner          TEXT NOT NULL,
+        createdAt       INTEGER NOT NULL
+      );
     `);
 
-    this._savePixelStmt = this.db.prepare(
-      'UPDATE pixels SET color = ?, updatedBy = ?, updatedAt = ? WHERE x = ? AND y = ?'
-    );
+    // Migración: si la tabla users tiene columnas viejas (tier, cooldownEndsAt, etc.)
+    // las ignoramos silenciosamente — SQLite permite columnas extra.
+
     this._upsertUserStmt = this.db.prepare(`
-      INSERT INTO users (nickname, token, pixelsRemaining, cooldownEndsAt, createdAt)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO users (nickname, token, password_hash, wins, losses, draws, createdAt)
+      VALUES (?, ?, ?, 0, 0, 0, ?)
       ON CONFLICT(nickname) DO UPDATE SET
         token = excluded.token,
-        pixelsRemaining = excluded.pixelsRemaining,
-        cooldownEndsAt = excluded.cooldownEndsAt
+        password_hash = COALESCE(excluded.password_hash, users.password_hash),
+        wins = COALESCE(users.wins, 0),
+        losses = COALESCE(users.losses, 0),
+        draws = COALESCE(users.draws, 0)
     `);
     this._insertMessageStmt = this.db.prepare(
-      'INSERT INTO messages (nickname, text, createdAt) VALUES (?, ?, ?)'
+      'INSERT INTO messages (roomId, nickname, text, createdAt) VALUES (?, ?, ?, ?)'
     );
+    this._insertGameStmt = this.db.prepare(`
+      INSERT INTO games (roomId, player1, player2, referenceImage, player1Canvas, player2Canvas, player1Score, player2Score, winner, createdAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    this._updateStatsStmt = this.db.prepare(`
+      UPDATE users SET wins = wins + ?, losses = losses + ?, draws = draws + ? WHERE nickname = ?
+    `);
   }
 
-  /** Pre-pobla el grid en blanco la primera vez (PK compuesta: una fila por coordenada). */
-  seedPixels(size) {
-    const count = this.db.prepare('SELECT COUNT(*) AS n FROM pixels').get().n;
-    if (count > 0) return;
-    const insert = this.db.prepare(
-      "INSERT INTO pixels (x, y, color) VALUES (?, ?, '#FFFFFF')"
+  saveUser(user) {
+    this._upsertUserStmt.run(
+      user.nickname,
+      user.token,
+      user.passwordHash || null,
+      Date.now()
     );
-    this.db.exec('BEGIN');
-    for (let y = 0; y < size; y++) {
-      for (let x = 0; x < size; x++) {
-        insert.run(x, y);
-      }
-    }
-    this.db.exec('COMMIT');
-  }
-
-  loadPixels(size) {
-    const rows = this.db.prepare('SELECT x, y, color FROM pixels').all();
-    if (rows.length === 0) return null;
-    const grid = Array.from({ length: size }, () =>
-      new Array(size).fill('#FFFFFF')
-    );
-    for (const row of rows) {
-      if (row.x >= 0 && row.x < size && row.y >= 0 && row.y < size) {
-        grid[row.y][row.x] = row.color;
-      }
-    }
-    return grid;
-  }
-
-  savePixel(x, y, color, updatedBy) {
-    // Paint significa UPDATE: cada coordenada existe una sola vez (sin historial).
-    this._savePixelStmt.run(color, updatedBy, Date.now(), x, y);
   }
 
   loadUsers() {
@@ -98,31 +84,54 @@ class Db {
       .map((row) => ({
         nickname: row.nickname,
         token: row.token,
-        pixelsRemaining: row.pixelsRemaining,
-        cooldownEndsAt: row.cooldownEndsAt,
+        passwordHash: row.password_hash || null,
+        wins: row.wins || 0,
+        losses: row.losses || 0,
+        draws: row.draws || 0,
       }));
   }
 
-  saveUser(user) {
-    this._upsertUserStmt.run(
-      user.nickname,
-      user.token,
-      user.pixelsRemaining,
-      user.cooldownEndsAt,
+  getStats(nickname) {
+    const row = this.db
+      .prepare('SELECT wins, losses, draws FROM users WHERE nickname = ?')
+      .get(nickname);
+    if (!row) return { wins: 0, losses: 0, draws: 0 };
+    return { wins: row.wins || 0, losses: row.losses || 0, draws: row.draws || 0 };
+  }
+
+  updateStats(winner, loser) {
+    if (winner === 'tie') {
+      this._updateStatsStmt.run(0, 0, 1, loser);
+      return;
+    }
+    this._updateStatsStmt.run(1, 0, 0, winner);
+    this._updateStatsStmt.run(0, 1, 0, loser);
+  }
+
+  saveMessage(roomId, nickname, text, createdAt) {
+    this._insertMessageStmt.run(roomId, nickname, text, createdAt);
+  }
+
+  loadMessages(roomId, limit = 50) {
+    return this.db
+      .prepare('SELECT nickname, text, createdAt FROM messages WHERE roomId = ? ORDER BY id DESC LIMIT ?')
+      .all(roomId, limit)
+      .reverse();
+  }
+
+  saveGame(game) {
+    this._insertGameStmt.run(
+      game.roomId,
+      game.player1,
+      game.player2,
+      JSON.stringify(game.referenceImage),
+      JSON.stringify(game.player1Canvas),
+      JSON.stringify(game.player2Canvas),
+      game.player1Score,
+      game.player2Score,
+      game.winner,
       Date.now()
     );
-  }
-
-  saveMessage(nickname, text, createdAt) {
-    this._insertMessageStmt.run(nickname, text, createdAt);
-  }
-
-  /** Últimos `limit` mensajes en orden ascendente (para el historial del chat). */
-  loadMessages(limit = 50) {
-    const rows = this.db
-      .prepare('SELECT nickname, text, createdAt FROM messages ORDER BY id DESC LIMIT ?')
-      .all(limit);
-    return rows.reverse();
   }
 
   close() {

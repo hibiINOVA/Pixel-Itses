@@ -1,8 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
 
-/// Estado del canvas + cooldown del usuario. Es un ChangeNotifier para que
-/// el CustomPainter repinte solo cuando cambia el lienzo (sin setState global).
+/// Estado del canvas del jugador. ChangeNotifier para repintar eficientemente.
 class PixelState extends ChangeNotifier {
   PixelState({this.size = 32})
       : _canvas = List.generate(size, (_) => List.filled(size, '#FFFFFF'));
@@ -10,16 +9,12 @@ class PixelState extends ChangeNotifier {
   int size;
   late List<List<String>> _canvas;
 
-  /// Pixeles restantes del usuario (el servidor es la fuente de verdad).
   int? pixelsRemaining;
-
-  /// Timestamp (ms epoch) en que termina el cooldown; null si no hay activo.
   int? cooldownEndsAt;
 
   List<List<String>> get canvas => _canvas;
 
-  bool inBounds(int x, int y) =>
-      x >= 0 && x < size && y >= 0 && y < size;
+  bool inBounds(int x, int y) => x >= 0 && x < size && y >= 0 && y < size;
 
   String colorAt(int x, int y) => _canvas[y][x];
 
@@ -27,7 +22,6 @@ class PixelState extends ChangeNotifier {
     return Color(int.parse(hex.substring(1), radix: 16) | 0xFF000000);
   }
 
-  /// Reemplaza el lienzo completo; el tamaño se deriva de las filas recibidas.
   void applySnapshot(List<List<String>> snapshot) {
     if (snapshot.isEmpty) return;
     _canvas = snapshot;
@@ -44,6 +38,11 @@ class PixelState extends ChangeNotifier {
   void applyCooldown({required int pixelsRemaining, required int? cooldownEndsAt}) {
     this.pixelsRemaining = pixelsRemaining;
     this.cooldownEndsAt = cooldownEndsAt;
+    notifyListeners();
+  }
+
+  void reset() {
+    _canvas = List.generate(size, (_) => List.filled(size, '#FFFFFF'));
     notifyListeners();
   }
 }

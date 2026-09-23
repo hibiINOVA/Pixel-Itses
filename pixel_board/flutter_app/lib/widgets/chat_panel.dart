@@ -6,7 +6,6 @@ import 'package:google_fonts/google_fonts.dart';
 import '../services/websocket_service.dart';
 import 'retro_text_field.dart';
 
-/// Un mensaje del chat tal como llega del backend.
 class ChatMessage {
   const ChatMessage({
     required this.nickname,
@@ -25,20 +24,18 @@ class ChatMessage {
   final int createdAt;
 }
 
-/// Panel de chat en vivo: historial al entrar (`chat_history`), mensajes
-/// nuevos por broadcast (`chat_update`) e input propio vía `chat`.
+/// Panel de chat por sala. Solo muestra mensajes de la sala actual.
 class ChatPanel extends StatefulWidget {
-  const ChatPanel({super.key, required this.socket});
+  const ChatPanel({super.key, required this.socket, this.roomId});
 
   final SocketClient socket;
+  final String? roomId;
 
   @override
   State<ChatPanel> createState() => _ChatPanelState();
 }
 
 class _ChatPanelState extends State<ChatPanel> {
-  static const _maxVisible = 50;
-
   final List<ChatMessage> _messages = [];
   final TextEditingController _controller = TextEditingController();
   StreamSubscription<Map<String, dynamic>>? _sub;
@@ -50,22 +47,13 @@ class _ChatPanelState extends State<ChatPanel> {
   }
 
   void _handleMessage(Map<String, dynamic> message) {
-    switch (message['type']) {
-      case 'chat_history':
-        final raw = message['messages'] as List? ?? const [];
-        setState(() {
-          _messages
-            ..clear()
-            ..addAll(raw.map((m) => ChatMessage.fromMap(m as Map<String, dynamic>)));
-        });
-      case 'chat_update':
-        setState(() {
-          _messages.add(ChatMessage.fromMap(message));
-          // Cintura de seguridad local: nunca más que el historial del server.
-          if (_messages.length > _maxVisible) {
-            _messages.removeRange(0, _messages.length - _maxVisible);
-          }
-        });
+    if (message['type'] == 'chat_update') {
+      setState(() {
+        _messages.add(ChatMessage.fromMap(message));
+        if (_messages.length > 50) {
+          _messages.removeRange(0, _messages.length - 50);
+        }
+      });
     }
   }
 
@@ -92,7 +80,6 @@ class _ChatPanelState extends State<ChatPanel> {
       ),
       child: Column(
         children: [
-          // Título estilo barra retro.
           Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(vertical: 10),
@@ -110,7 +97,7 @@ class _ChatPanelState extends State<ChatPanel> {
             child: _messages.isEmpty
                 ? Center(
                     child: Text(
-                      'SÉ EL PRIMERO EN\nESCRIBIR...',
+                      'ESCRIBÍ ALGO...',
                       textAlign: TextAlign.center,
                       style: GoogleFonts.pressStart2p(
                         fontSize: 8,
@@ -120,7 +107,7 @@ class _ChatPanelState extends State<ChatPanel> {
                     ),
                   )
                 : ListView.builder(
-                    reverse: true, // índice 0 = último mensaje (auto-scroll)
+                    reverse: true,
                     padding: const EdgeInsets.all(10),
                     itemCount: _messages.length,
                     itemBuilder: (context, index) {
@@ -134,8 +121,7 @@ class _ChatPanelState extends State<ChatPanel> {
                               TextSpan(
                                 text: '[${message.nickname}] ',
                                 style: const TextStyle(
-                                  color: Color(0xFFFF8C42),
-                                ),
+                                    color: Color(0xFFFF8C42)),
                               ),
                               TextSpan(text: message.text),
                             ],
@@ -171,9 +157,7 @@ class _ChatPanelState extends State<ChatPanel> {
                   onTap: _send,
                   child: Container(
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 12,
-                    ),
+                        horizontal: 12, vertical: 12),
                     decoration: const BoxDecoration(
                       color: Color(0xFFFF8C42),
                       border: Border.fromBorderSide(

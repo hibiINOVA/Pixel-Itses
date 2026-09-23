@@ -23,9 +23,17 @@ class PixelCanvas extends StatelessWidget {
         final side = constraints.biggest.shortestSide;
         final cell = side / state.size;
 
-        return GestureDetector(
-          onTapDown: (details) {
-            final local = details.localPosition;
+        return Listener(
+          onPointerDown: (event) {
+            final local = event.localPosition;
+            final x = (local.dx / cell).floor();
+            final y = (local.dy / cell).floor();
+            if (state.inBounds(x, y)) {
+              onTapPixel(x, y);
+            }
+          },
+          onPointerMove: (event) {
+            final local = event.localPosition;
             final x = (local.dx / cell).floor();
             final y = (local.dy / cell).floor();
             if (state.inBounds(x, y)) {

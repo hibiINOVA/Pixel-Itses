@@ -37,6 +37,7 @@ dependencies:
   shared_preferences: ^2.3.2
   google_fonts: ^6.2.1
   web_socket_channel: ^3.0.1
+  url_launcher: ^6.2.5
 
 dev_dependencies:
   flutter_test:
@@ -48,6 +49,7 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  lints: ^6.1.0
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

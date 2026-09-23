@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-/// Paleta fija de colores del mockup (coincide con el backend).
+/// Paleta fija de colores del juego (8 colores base por defecto).
 const kPalette = <String>[
   '#D3D3D3', // gris claro
   '#4A4A4A', // gris oscuro
@@ -12,19 +12,22 @@ const kPalette = <String>[
   '#800000', // granate
 ];
 
-/// Selector de colores fijo con borde blanco para el color activo.
 class ColorPalette extends StatelessWidget {
   const ColorPalette({
     super.key,
     required this.selected,
     required this.onSelect,
+    this.palette = kPalette,
   });
 
   final String selected;
   final ValueChanged<String> onSelect;
+  final List<String> palette;
 
   @override
   Widget build(BuildContext context) {
+    final colors = palette.isNotEmpty ? palette : kPalette;
+
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -36,10 +39,10 @@ class ColorPalette extends StatelessWidget {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            for (final color in kPalette) ...[
+            for (final color in colors) ...[
               PixelSwatch(
                 color: color,
-                selected: color == selected,
+                selected: color.toUpperCase() == selected.toUpperCase(),
                 onTap: () => onSelect(color),
               ),
               const SizedBox(width: 8),
@@ -51,7 +54,6 @@ class ColorPalette extends StatelessWidget {
   }
 }
 
-/// Un color individual de la paleta.
 class PixelSwatch extends StatelessWidget {
   const PixelSwatch({
     super.key,

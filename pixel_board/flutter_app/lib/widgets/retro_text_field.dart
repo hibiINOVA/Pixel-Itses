@@ -7,12 +7,14 @@ class RetroTextField extends StatelessWidget {
     super.key,
     required this.hint,
     required this.controller,
+    this.focusNode,
     this.maxLength = 16,
     this.onSubmitted,
   });
 
   final String hint;
   final TextEditingController controller;
+  final FocusNode? focusNode;
   final int maxLength;
   final ValueChanged<String>? onSubmitted;
 
@@ -32,11 +34,12 @@ class RetroTextField extends StatelessWidget {
       ),
       child: TextField(
         controller: controller,
+        focusNode: focusNode,
         maxLength: maxLength,
         textCapitalization: TextCapitalization.characters,
         onSubmitted: onSubmitted,
         inputFormatters: [
-          FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z0-9_\-\s]')),
+          FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z0-9_\- ]')),
         ],
         style: GoogleFonts.pressStart2p(fontSize: 14, color: Colors.black),
         decoration: InputDecoration(

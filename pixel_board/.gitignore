@@ -1,0 +1,5 @@
+# Datos de producción (SQLite del backend en Docker)
+data/
+
+# Credenciales ngrok (nunca commitear)
+.env

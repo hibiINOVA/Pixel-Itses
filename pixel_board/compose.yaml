@@ -1,0 +1,28 @@
+services:
+  backend:
+    build: ./backend
+    container_name: pixel-itses-backend
+    # Arranca solo al prender la PC (docker.service está enabled)
+    restart: always
+    # Solo localhost: nada expuesto a la LAN; el túnel (ngrok) entra por acá
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      PORT: "3000"
+      DB_PATH: /data/pixel_board.sqlite
+      PREVIEW_SECONDS: "15"
+      DRAW_SECONDS: "60"
+    volumes:
+      - ./data:/data
+
+  # Túnel público (fuera de la red local): front de Pages se conecta por wss://
+  # Requiere NGROK_AUTHTOKEN y NGROK_DOMAIN en pixel_board/.env (no commitear).
+  tunnel:
+    image: ngrok/ngrok:latest
+    container_name: pixel-itses-tunnel
+    restart: always
+    depends_on:
+      - backend
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
+    command: ["http", "backend:3000", "--url=https://${NGROK_DOMAIN:-}"]

@@ -1,0 +1,4 @@
+node_modules
+pixel_board.sqlite
+*.sqlite
+*.log

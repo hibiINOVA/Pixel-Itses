@@ -1,0 +1,62 @@
+name: Deploy frontend a GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Habilita Pages con source "GitHub Actions" si todavía no está activo
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.0'
+          channel: stable
+          cache: true
+
+      - name: Dependencias
+        working-directory: pixel_board/flutter_app
+        run: flutter pub get
+
+      - name: Análisis estático
+        working-directory: pixel_board/flutter_app
+        run: flutter analyze
+
+      - name: Tests
+        working-directory: pixel_board/flutter_app
+        run: flutter test
+
+      - name: Build web
+        working-directory: pixel_board/flutter_app
+        run: flutter build web --release --base-href "/Pixel-Itses/" --dart-define=WS_URL=wss://pasty-luckily-bagpipe.ngrok-free.dev
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: pixel_board/flutter_app/build/web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

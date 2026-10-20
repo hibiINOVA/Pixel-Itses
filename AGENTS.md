@@ -2,46 +2,79 @@
 
 ## Project state
 
-Two-player memory-draw-and-compare game. Structure: `pixel_board/{backend, flutter_app}`. Root `README.md` has run instructions for humans.
+Two-player memory-draw-and-compare game. `pixel_board/{backend, flutter_app}`. Root `README.md` has human run instructions.
+
+**Working tree is mid-refactor and uncommitted.** Passwords and the whole `register` flow were just deleted (see "Auth model"). Trust the code, not the docs:
+
+- `README.md` is STALE — documents register/passwords, lists `register_screen.dart` (deleted), claims 25 tests (actual: 19), and claims a v1→v3 DB migration that `db.js` no longer performs (it's only `CREATE TABLE IF NOT EXISTS`). Don't "restore" the password flow from it.
+- `pixel-board-spec.md` is older still: it specs a *different* game (r/place-style shared canvas, 5-pixel/2-min cooldowns, `canvas_snapshot`). Ignore its architecture entirely.
+- The local dev `pixel_board.sqlite` (gitignored) was created by the old schema, so it still has a leftover nullable `password_hash` column and ~13 pre-existing users. Harmless (new INSERTs omit the column), but it's what makes the lockout bug below trigger immediately.
 
 ## Stack
 
-- Backend: Node.js + WebSocket (`ws`), SQLite (`node:sqlite`) for persistence, `crypto` for passwords/tokens. ESM (`"type": "module"` in package.json). Entry: `server.js`. Source: `canvas.js`, `room.js`, `matcher.js`, `scoring.js`, `images.js`, `users.js`, `db.js`.
-- Frontend: Flutter (Dart ^3.12) with `shared_preferences`, `google_fonts` (Press Start 2P), `web_socket_channel`, `url_launcher`. Single `CustomPainter` grid (never per-pixel widgets). `SocketClient` abstract class (`websocket_service.dart`) lets widget tests inject fakes — screens take an optional socket, null means real `WebsocketService`.
-- Mascot: `ScorpyPainter` (`scorpy_painter.dart`) draws a scorpion pixel-by-pixel via `CustomPainter`. `ScorpyMascot` (`scorpy_mascot.dart`) wraps it with a speech bubble and animation. States: `idle`, `tipOn`, `celebrating`.
+- Backend: Node ESM (`"type": "module"`), `ws`, `node:sqlite`, `crypto.randomBytes`. Entry `server.js`; modules `canvas.js`, `room.js`, `matcher.js`, `scoring.js`, `images.js`, `users.js`, `db.js`.
+- Frontend: Flutter (Dart ^3.12). Deps: `shared_preferences`, `google_fonts` (Press Start 2P — fetches at runtime, needs network), `web_socket_channel`, `url_launcher`. No image assets; Scorpy is drawn programmatically.
+- 32×32 grid is ONE `CustomPainter` (`pixel_canvas.dart`) — never per-pixel widgets.
+- `SocketClient` abstract class in `websocket_service.dart` is the test seam: every screen takes an optional `SocketClient socket`; null ⇒ real `WebsocketService`. `test/widget_test.dart`'s `FakeSocket implements SocketClient` records sends and can `emit()` server messages.
+- Backend URL is compile-time only: `kWsUrl` via `--dart-define=WS_URL=...` (default `ws://localhost:3000`). Rebuild to change it.
 
 ## Commands
 
-In `pixel_board/backend/`: `npm install`, `npm start` (node server.js, port 3000), `npm run smoke` (test/smoke.js — self-hosted: spawns its own server on a random port with PREVIEW_SECONDS=1, DRAW_SECONDS=2, tests full game flow including matchmaking/draw/results/stats persistence; no running server needed).
+Backend (`pixel_board/backend/`): `npm install`, `npm start` (port 3000), `npm run smoke`. Only those two scripts exist — there is no `npm test` or lint script.
+Env vars: `PORT` (3000), `DB_PATH` (`pixel_board.sqlite`), `PREVIEW_SECONDS` (15), `DRAW_SECONDS` (60) — the last two are read in `room.js`.
 
-Backend env vars: `PORT` (3000), `DB_PATH`, `PREVIEW_SECONDS` (15), `DRAW_SECONDS` (60).
+Frontend (`pixel_board/flutter_app/`): `flutter pub get`, `flutter analyze`, `flutter test`, `flutter run -d chrome`, `flutter build web`.
 
-In `pixel_board/flutter_app/`: `flutter pub get`, `flutter analyze`, `flutter test`, `flutter run -d chrome`, `flutter build web`. Deps: `shared_preferences`, `google_fonts` (`Press Start 2P` — needs network at runtime), `web_socket_channel`, `url_launcher`. No image assets (Scorpy is rendered programmatically). Backend URL is a compile-time define: `--dart-define=WS_URL=ws://host:3000` (default `ws://localhost:3000`, see `kWsUrl`). Login/register texts are in Spanish.
+Verify in this order: `flutter analyze` → `flutter test` → `npm run smoke` (the two suites are independent; don't need both to pass to iterate on one). There is no CI or pre-commit config — these three commands are the entire verification surface.
+`flutter build web` takes ~2.5 min and looks hung — give it ≥300s.
 
-Verification order: `flutter analyze` (lint) → `flutter test` → `npm run smoke`.
+## Auth model (changed recently — read this before touching auth)
 
-- `flutter build web` takes ~2.5 min and can look hung; give bash tool calls ≥300s timeout.
+There is **no password and no register**. `users.js` has no `register`/`login`; the `password_hash` column was dropped from `db.js`; the server has no `register` handler. `hello` is the only entry:
 
-## Conventions to follow
+- unknown nickname → `getOrCreate` (fresh random token) → `auth_ok`
+- existing nickname + matching `token` → `auth_ok` (reconnect)
+- existing nickname + no/invalid token → `nickname_taken`
 
-- All doc, UI copy, and code comments in Spanish.
-- Message protocol: client → server `hello {nickname, token?, password?}`, `register {nickname, password}`, `paint {x,y,color,userId}`, `finish_turn`, `chat {text}` (máx. 200 chars), `next_game`; server → client `auth_ok {token, wins, losses, draws}`, `canvas_snapshot`, `game_start {roomId, player1, player2, opponent, referenceImage, previewSeconds, drawSeconds}`, `draw_start {drawSeconds}`, `pixel_update`, `player_finished {nickname}`, `game_results {winner, player1Score, player2Score, player1Canvas, player2Canvas, reference, forfeit}`, `chat_update`, `nickname_taken`, `auth_error {error}`, `matchmaking_status {status}`, `stats_update {wins, losses, draws}`.
-- Identity: the nickname IS the unique identity (users PK). Auth uses passwords (scrypt hash) — token is a session resume credential. Login sends `hello {nickname, password}`, register sends `register {nickname, password}`. Duplicate name → `nickname_taken`; wrong password → `auth_error {error: 'wrong_password'}`; unknown name → `auth_error {error: 'not_found'}`.
-- Game flow: login → auto-matchmaking → `game_start` with reference image → preview phase (memorize) → both players draw simultaneously → `game_results` with similarity scores → "SIGUIENTE PARTIDA" button re-queues.
-- Backend is the single source of truth for all game state. Paint coordinates validated with strict types (`Number.isInteger`). Nicknames normalized server-side: trimmed, 1–16 chars, regex `[a-zA-Z0-9_\- ]`.
-- SQLite schema: users keyed by nickname with `token NOT NULL`, `password_hash`, `wins`, `losses`, `draws`; messages table scoped to room; `games` table for match history.
-- Retro pixel style is a hard requirement: pixel/monospace font (Press Start 2P), thick solid black/white borders, **no** `borderRadius`, solid offset shadows via `BoxShadow` with blur of 0. Palette is cream `#FFF3D6`, oranges `#FF6B35`/`#FF8C42`, red `#D62828`, pure black borders.
-- Scorpy mascot: drawn programmatically with `ScorpyPainter` (CustomPainter, no image assets). Color palette: body `#B86F2C`, shadows `#6F411C`, lights `#FFD8A8`, bulb `#F9BB30`/`#E69E58`, outline `#100D09`. States: `idle`, `tipOn` (bulb lit + glow), `celebrating` (claws raised). Positioned bottom-right in all screens.
+The server never sends `auth_error` — only `auth_ok` and `nickname_taken`. Client still handles `auth_error` in `login_screen.dart` and `matchmaking_screen.dart`; that branch is dead.
+
+### Known live bug: returning players are locked out
+
+`UserStore` no longer persists the token (`saveToken`/`getToken` deleted) and `sendHello` never sends one, but the server requires it to reclaim an existing nickname. Since users persist in SQLite, a returning player gets `nickname_taken` for their own name on:
+- `WebsocketService._handleDisconnect` auto-reconnect (sends `hello` with no token, server keeps the record)
+- the `_StartRouter` fast-path in `main.dart` (nickname saved ⇒ skip login ⇒ connect ⇒ `nickname_taken`)
+
+Worse, `matchmaking_screen.dart` handles `auth_error` but **not** `nickname_taken`, so that path strands the player on the matchmaking screen until the matchmaking timeout. If you touch auth, the fix is to persist the token again and send it on reconnect — don't paper over it by deleting the duplicate-name check, which is what makes names unique.
+
+Dead code left behind: `lib/widgets/retro_password_field.dart` has zero references.
+
+## Protocol
+
+Client → server: `hello {nickname, token?}`, `start_matchmaking`, `paint {x,y,color,userId}`, `finish_turn`, `chat {text}`, `next_game` (server ignores `paint.userId` — it uses the authenticated nickname).
+Server → client: `auth_ok {token, wins, losses, draws}`, `matchmaking_status {status}`, `game_start {roomId, player1, player2, opponent, referenceImage, previewSeconds, drawSeconds}`, `draw_start {drawSeconds}`, `pixel_update`, `player_finished {nickname}`, `game_results {roomId, winner, player1, player2, opponent, player1Score, player2Score, player1Canvas, player2Canvas, reference, forfeit}`, `chat_update {nickname, text, createdAt}`, `stats_update {wins, losses, draws}`, `nickname_taken {nickname}`. That list is complete — the server sends nothing else (older docs mention `canvas_snapshot`, which is never sent).
+
+- `start_matchmaking` is required to enter the queue — matchmaking is NOT automatic on `auth_ok`. `matchmaking_screen.dart` sends it from inside its `auth_ok` handler, so the listener must exist before the first server message arrives.
+- `draw_start` goes to **both** players: they draw simultaneously, not in turns.
+- Chat only works inside a room (`getRoomForWs(ws)` returns null otherwise), max 200 chars, 500 ms rate limit.
+- Everything except `hello` requires prior auth (`wsToNickname`).
+- Don't confuse protocol message types with `GameScreen._phase`, a local UI state string (`'image_preview' | 'drawing' | 'waiting_results' | 'results'`) assigned in handlers. Grepping for `case '...'` in `game_screen.dart` hits both.
+
+## Conventions
+
+- All docs, UI copy, and code comments in **Spanish**.
+- Backend is the single source of truth for game state. `paint` validates strictly: `Number.isInteger(x/y)`, `color` must be a 7-char string.
+- Nicknames normalized server-side in `normalizeNickname`: trimmed, ≤16 chars, regex `[a-zA-Z0-9_\- ]`. Invalid → connection silently ignored (no error reply).
+- SQLite: `users` keyed by nickname (`token NOT NULL`, `wins`, `losses`, `draws`); `messages` scoped to room; `games` for match history. `getStats` always returns all three stat keys, so `...stats` spreads safely into `auth_ok`.
+- Retro pixel style is a hard requirement: Press Start 2P, thick solid black borders, **no** `borderRadius`, offset shadows with `blurRadius: 0`. Palette: cream `#FFF3D6`, `#FF6B35`/`#FF8C42`, red `#D62828`, black.
+- Scorpy (`scorpy_painter.dart` + `scorpy_mascot.dart`): `CustomPainter`, states `idle` / `tipOn` / `celebrating`, bottom-right in every screen.
 
 ## Gotchas
 
-- Port 8080 is occupied by a docker-proxy — use the default 3000.
-- Starting `server.js` in the background from a bash tool call can wedge the shell; run it detached (`setsid node server.js </dev/null >log 2>&1 &`) and kill via `pkill -f "node server.js"` (the pkill call itself may hang the tool shell — it still works; verify port with `ss -tlnp | grep 3000`).
-- The smoke test no longer needs a live server or clean state — it manages its own lifecycle. Don't reintroduce dependence on a manually started server.
-- The smoke test must close earlier connections (`a2.ws.close()` etc.) before starting the matchmaking section, otherwise stale connections remain in the matcher queue and corrupt pairing.
-- `draw_start` is sent to **both** players simultaneously — both draw at the same time.
-- Chat is always visible as a sidebar on the right during preview and drawing phases.
-- Flutter widget tests: `SharedPreferences.setMockInitialValues({})` in `setUp`; after navigating to a screen use explicit `pump(duration)` steps, never `pumpAndSettle` (reconnect timers never settle). Messages emitted via FakeSocket must be done AFTER the target screen's message listener is set up (add pump delays).
-- `_StartRouter._checkSession()` is async — tests need extra pumps (3 total) after `pumpWidget` for the navigation to complete. The `_enterBoard` method in both login and register screens has a `Future.delayed(800ms)` for Scorpy's celebration animation — tests need to pump through that delay.
-- `GameScreen._myNickname` is derived from `gameStart`: if `player1 == opponent` then the user is `player2`, else `player1`.
-- `PixelCanvas.onTapPixel` takes `void Function(int x, int y)`, not single-arg.
+- Port 8080 is a docker proxy — use 3000.
+- Backgrounding the server from a bash call can wedge the shell: `setsid node server.js </dev/null >log 2>&1 &`, kill with `pkill -f "node server.js"`, verify with `ss -tlnp | grep 3000`.
+- `npm run smoke` is hermetic — random port and a per-PID temp SQLite in `tmpdir()`, cleaned up itself. Safe to re-run; needs no server running and no clean state. Don't reintroduce a dependency on a manually started server.
+- Smoke test must `ws.close()` earlier connections (e.g. `a.ws.close()`, `dup.ws.close()`) before the matchmaking section, or stale sockets sit in the matcher queue and corrupt pairing. It also reuses fixed nicknames (`player1`, `alice`, `bob`) that only work because the DB is fresh each run — a new check added there must either use a fresh nickname or tolerate `nickname_taken`.
+- `WebsocketService` retries with exponential backoff capped at 8 s and never settles → widget tests must use explicit `pump(duration)` steps, **never** `pumpAndSettle`.
+- Widget tests: `SharedPreferences.setMockInitialValues({})` in `setUp`; emit via `FakeSocket` only after the screen's listener is attached (add pump delays); `_StartRouter._checkSession()` is async (needs 3 pumps after `pumpWidget`); `LoginScreen._enterBoard` has `Future.delayed(800ms)` for Scorpy's celebration (pump ~900 ms).
+- `GameScreen._myNickname` is inferred, not sent: if `player1 == opponent` the user is `player2`, else `player1`. Result mapping in `game_results` depends on it.
+- `PixelCanvas.onTapPixel` is `void Function(int x, int y)`, not single-arg.

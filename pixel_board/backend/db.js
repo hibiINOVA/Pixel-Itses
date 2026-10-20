@@ -13,7 +13,6 @@ class Db {
       CREATE TABLE IF NOT EXISTS users (
         nickname        TEXT PRIMARY KEY,
         token           TEXT NOT NULL,
-        password_hash   TEXT,
         wins            INTEGER NOT NULL DEFAULT 0,
         losses          INTEGER NOT NULL DEFAULT 0,
         draws           INTEGER NOT NULL DEFAULT 0,
@@ -43,15 +42,11 @@ class Db {
       );
     `);
 
-    // Migración: si la tabla users tiene columnas viejas (tier, cooldownEndsAt, etc.)
-    // las ignoramos silenciosamente — SQLite permite columnas extra.
-
     this._upsertUserStmt = this.db.prepare(`
-      INSERT INTO users (nickname, token, password_hash, wins, losses, draws, createdAt)
-      VALUES (?, ?, ?, 0, 0, 0, ?)
+      INSERT INTO users (nickname, token, wins, losses, draws, createdAt)
+      VALUES (?, ?, 0, 0, 0, ?)
       ON CONFLICT(nickname) DO UPDATE SET
         token = excluded.token,
-        password_hash = COALESCE(excluded.password_hash, users.password_hash),
         wins = COALESCE(users.wins, 0),
         losses = COALESCE(users.losses, 0),
         draws = COALESCE(users.draws, 0)
@@ -72,7 +67,6 @@ class Db {
     this._upsertUserStmt.run(
       user.nickname,
       user.token,
-      user.passwordHash || null,
       Date.now()
     );
   }
@@ -84,7 +78,6 @@ class Db {
       .map((row) => ({
         nickname: row.nickname,
         token: row.token,
-        passwordHash: row.password_hash || null,
         wins: row.wins || 0,
         losses: row.losses || 0,
         draws: row.draws || 0,

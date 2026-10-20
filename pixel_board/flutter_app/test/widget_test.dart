@@ -3,26 +3,26 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pixel_board/main.dart';
+import 'package:pixel_board/screens/login_screen.dart';
 import 'package:pixel_board/screens/matchmaking_screen.dart';
-import 'package:pixel_board/screens/register_screen.dart';
 import 'package:pixel_board/screens/game_screen.dart';
+import 'package:pixel_board/services/user_store.dart';
 import 'package:pixel_board/services/websocket_service.dart';
 import 'package:pixel_board/widgets/chat_panel.dart';
 import 'package:pixel_board/widgets/color_palette.dart';
 import 'package:pixel_board/widgets/pixel_canvas.dart';
 import 'package:pixel_board/widgets/retro_text_field.dart';
-import 'package:pixel_board/widgets/retro_button.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class FakeSocket implements SocketClient {
   final _messages = StreamController<Map<String, dynamic>>.broadcast();
   final _status = StreamController<SocketStatus>.broadcast();
   final hellos = <Map<String, dynamic>>[];
-  final sentRegisters = <Map<String, String>>[];
   final sentChats = <String>[];
   final sentPaints = <Map<String, dynamic>>[];
   int sentFinishTurns = 0;
   int sentNextGames = 0;
+  int sentStartMatchmakings = 0;
 
   @override
   Stream<Map<String, dynamic>> get messages => _messages.stream;
@@ -33,9 +33,8 @@ class FakeSocket implements SocketClient {
   void emit(Map<String, dynamic> message) => _messages.add(message);
 
   @override
-  void connect(String nickname, {String? token, String? password, bool isRegister = false}) {
-    hellos.add({'nickname': nickname, 'token': token, 'password': password});
-    // Defer status so listeners can subscribe first
+  void connect(String nickname, {String? token}) {
+    hellos.add({'nickname': nickname, 'token': token});
     Future.microtask(() {
       _status.add(SocketStatus.conectando);
       Future.microtask(() => _status.add(SocketStatus.conectado));
@@ -43,14 +42,10 @@ class FakeSocket implements SocketClient {
   }
 
   @override
-  void sendHello(String nickname, {String? token, String? password}) {}
+  void sendHello(String nickname) {}
 
   @override
   void sendChat(String text) => sentChats.add(text);
-
-  @override
-  void sendRegister(String nickname, String password) =>
-      sentRegisters.add({'nickname': nickname, 'password': password});
 
   @override
   void sendPaint({required int x, required int y, required String color, required String nickname}) {
@@ -63,7 +58,6 @@ class FakeSocket implements SocketClient {
   @override
   void sendNextGame() { sentNextGames++; }
 
-  int sentStartMatchmakings = 0;
   @override
   void sendStartMatchmaking() { sentStartMatchmakings++; }
 
@@ -111,7 +105,6 @@ void main() {
 
   Future<void> pumpLogin(WidgetTester tester) async {
     await tester.pumpWidget(PixelBoardApp(socket: socket));
-    // _StartRouter._checkSession() es async → necesita pumps extra para navegar
     await tester.pump();
     await tester.pump();
     await tester.pump();
@@ -120,31 +113,26 @@ void main() {
   Future<void> pumpMatchmaking(WidgetTester tester) async {
     await pumpLogin(tester);
     await tester.enterText(find.byType(RetroTextField).first, 'alice');
-    await tester.enterText(find.byType(TextField).last, 'Passw0rd!');
     await tester.tap(find.text('UNIRSE'));
     await tester.pump();
     socket.emit(_authOk());
     await tester.pump();
-    // _enterBoard tiene Future.delayed(800ms) para celebración de Scorpy
     await tester.pump(const Duration(milliseconds: 900));
     await tester.pump();
-    // Wait for MatchmakingScreen to mount and subscribe to stream
     await tester.pump(const Duration(milliseconds: 100));
   }
 
   Future<void> pumpGame(WidgetTester tester) async {
     await pumpMatchmaking(tester);
     expect(find.byType(MatchmakingScreen), findsOneWidget);
-    // Emit game_start after MatchmakingScreen listener is ready
     await tester.pump(const Duration(milliseconds: 50));
     socket.emit(_gameStart());
     await tester.pump();
-    // Complete the pushReplacement animation
     await tester.pump(const Duration(milliseconds: 400));
     await tester.pump();
   }
 
-  // ─── Login ─────────────────────────────────────────────────────
+  // ─── Login ─────────────────────────────────────────────
 
   testWidgets('login muestra título y botón UNIRSE', (tester) async {
     await pumpLogin(tester);
@@ -161,25 +149,21 @@ void main() {
     expect(find.text('UNIRSE'), findsOneWidget);
   });
 
-  testWidgets('nombre ya usado muestra error y permanece en el login', (tester) async {
+  testWidgets('nombre ya usado muestra alerta y permanece en el login', (tester) async {
     await pumpLogin(tester);
     await tester.enterText(find.byType(RetroTextField).first, 'hibi');
-    await tester.enterText(find.byType(TextField).last, 'pass123');
     await tester.tap(find.text('UNIRSE'));
     await tester.pump();
-    // Puede haber 2 CircularProgressIndicators: uno del LoginScreen (_checking)
-    // y otro residual del _StartRouter durante la transición pushReplacement
     expect(find.byType(CircularProgressIndicator), findsAtLeastNWidgets(1));
     socket.emit({'type': 'nickname_taken', 'nickname': 'hibi'});
     await tester.pump();
-    expect(find.text('NOMBRE YA USADO · PROBÁ OTRO'), findsOneWidget);
+    expect(find.text('NOMBRE YA USADO · ELEGÍ OTRO'), findsOneWidget);
     expect(find.text('UNIRSE'), findsOneWidget);
   });
 
   testWidgets('sin respuesta del servidor muestra error de conexión', (tester) async {
     await pumpLogin(tester);
     await tester.enterText(find.byType(RetroTextField).first, 'hibi');
-    await tester.enterText(find.byType(TextField).last, 'pass123');
     await tester.tap(find.text('UNIRSE'));
     await tester.pump();
     await tester.pump(const Duration(seconds: 4));
@@ -189,18 +173,79 @@ void main() {
   testWidgets('nombre nuevo guarda sesión y navega a matchmaking', (tester) async {
     await pumpLogin(tester);
     await tester.enterText(find.byType(RetroTextField).first, 'hibi');
-    await tester.enterText(find.byType(TextField).last, 'pass123');
     await tester.tap(find.text('UNIRSE'));
     await tester.pump();
     socket.emit(_authOk());
     await tester.pump();
-    // _enterBoard tiene Future.delayed(800ms) para celebración de Scorpy
     await tester.pump(const Duration(milliseconds: 900));
     await tester.pump();
     expect(find.byType(MatchmakingScreen), findsOneWidget);
     final prefs = await SharedPreferences.getInstance();
     expect(prefs.getString('nickname'), 'hibi');
-    expect(prefs.getString('token'), 'token-secreto');
+  });
+
+  // ─── Token de reconexión (bug de lockout) ─────────────
+
+  Future<void> pumpLoginScreen(WidgetTester tester) async {
+    await tester.pumpWidget(MaterialApp(home: LoginScreen(socket: socket)));
+    await tester.pump();
+  }
+
+  testWidgets('login envía el token guardado y persiste el nuevo', (tester) async {
+    SharedPreferences.setMockInitialValues({
+      'nickname': 'hibi',
+      'token': 'token-viejo',
+    });
+    await pumpLoginScreen(tester);
+    await tester.enterText(find.byType(RetroTextField).first, 'hibi');
+    await tester.tap(find.text('UNIRSE'));
+    await tester.pump();
+    await tester.pump();
+    expect(socket.hellos.last['nickname'], 'hibi');
+    expect(socket.hellos.last['token'], 'token-viejo');
+    socket.emit(_authOk(token: 'token-nuevo'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 900));
+    await tester.pump();
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getString('token'), 'token-nuevo');
+  });
+
+  testWidgets('login con otro nickname no reusa el token ajeno', (tester) async {
+    SharedPreferences.setMockInitialValues({
+      'nickname': 'hibi',
+      'token': 'token-viejo',
+    });
+    await pumpLoginScreen(tester);
+    await tester.enterText(find.byType(RetroTextField).first, 'otro');
+    await tester.tap(find.text('UNIRSE'));
+    await tester.pump();
+    await tester.pump();
+    expect(socket.hellos.last['nickname'], 'otro');
+    expect(socket.hellos.last['token'], isNull);
+  });
+
+  testWidgets('nickname_taken en matchmaking vuelve al login y limpia sesión', (tester) async {
+    await pumpMatchmaking(tester);
+    expect(find.byType(MatchmakingScreen), findsOneWidget);
+    socket.emit({'type': 'nickname_taken', 'nickname': 'alice'});
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1000));
+    expect(find.byType(LoginScreen), findsOneWidget);
+    expect(find.byType(MatchmakingScreen), findsNothing);
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getString('nickname'), isNull);
+    expect(prefs.getString('token'), isNull);
+  });
+
+  testWidgets('UserStore persiste y borra el token de sesión', (tester) async {
+    final store = UserStore();
+    await store.saveToken('tok-123');
+    expect(await store.getToken(), 'tok-123');
+    await store.clearSession();
+    expect(await store.getToken(), isNull);
   });
 
   testWidgets('matchmaking muestra stats del jugador', (tester) async {
@@ -295,79 +340,7 @@ void main() {
     expect(find.text('PERDISTE'), findsOneWidget);
   });
 
-  // ─── Registro ────────────────────────────────────────────────────
-
-  testWidgets('login muestra botón CREAR CUENTA', (tester) async {
-    await pumpLogin(tester);
-    expect(find.byKey(const Key('crear_cuenta_link')), findsOneWidget);
-  });
-
-  testWidgets('tap CREAR CUENTA navega a RegisterScreen', (tester) async {
-    await pumpLogin(tester);
-    await tester.tap(find.byKey(const Key('crear_cuenta_link')));
-    await tester.pumpAndSettle();
-    expect(find.byType(RegisterScreen), findsOneWidget);
-    expect(find.text('REGISTRATE\nEN PIXEL BOARD'), findsOneWidget);
-  });
-
-  testWidgets('register: button deshabilitado con password débil', (tester) async {
-    await tester.pumpWidget(PixelBoardApp(socket: socket));
-    await tester.pump();
-    await tester.pump();
-    await tester.tap(find.byKey(const Key('crear_cuenta_link')));
-    await tester.pumpAndSettle();
-    expect(find.byType(RegisterScreen), findsOneWidget);
-    final fields = find.byType(TextField);
-    await tester.enterText(fields.at(0), 'nuevo');
-    await tester.enterText(fields.at(1), 'abc123');
-    await tester.pump();
-    expect(find.text('MÍNIMO 8 CARACTERES'), findsOneWidget);
-    final button = find.byType(RetroButton);
-    expect(tester.widget<Opacity>(find.ancestor(of: button, matching: find.byType(Opacity))).opacity, 0.4);
-  });
-
-  testWidgets('register: passwords no coinciden muestra error', (tester) async {
-    await tester.pumpWidget(PixelBoardApp(socket: socket));
-    await tester.pump();
-    await tester.pump();
-    await tester.tap(find.byKey(const Key('crear_cuenta_link')));
-    await tester.pumpAndSettle();
-    final fields = find.byType(TextField);
-    await tester.enterText(fields.at(0), 'nuevo');
-    await tester.enterText(fields.at(1), 'Passw0rd!');
-    await tester.enterText(fields.at(2), 'Wrong0ne!');
-    await tester.pump();
-    expect(find.text('MUY FUERTE (4/4 ✓)'), findsOneWidget);
-    expect(find.text('LAS CONTRASEÑAS NO COINCIDEN'), findsOneWidget);
-  });
-
-  testWidgets('register: exitoso navega a matchmaking', (tester) async {
-    await tester.pumpWidget(PixelBoardApp(socket: socket));
-    await tester.pump();
-    await tester.pump();
-    await tester.tap(find.byKey(const Key('crear_cuenta_link')));
-    await tester.pumpAndSettle();
-    final fields = find.byType(TextField);
-    await tester.enterText(fields.at(0), 'nuevo');
-    await tester.enterText(fields.at(1), 'Passw0rd!');
-    await tester.enterText(fields.at(2), 'Passw0rd!');
-    await tester.pump();
-    expect(find.text('MUY FUERTE (4/4 ✓)'), findsOneWidget);
-    expect(find.text('CONTRASEÑAS COINCIDEN ✓'), findsOneWidget);
-    await tester.drag(find.byType(SingleChildScrollView), const Offset(0, -300));
-    await tester.pump();
-    await tester.tap(find.byKey(const Key('register_submit')));
-    await tester.pump();
-    expect(find.byType(CircularProgressIndicator), findsOneWidget);
-    socket.emit(_authOk());
-    await tester.pump();
-    // _enterBoard tiene Future.delayed(800ms) para celebración de Scorpy
-    await tester.pump(const Duration(milliseconds: 900));
-    await tester.pump();
-    expect(find.byType(MatchmakingScreen), findsOneWidget);
-  });
-
-  // ─── Chat ─────────────────────────────────────────────────────
+  // ─── Chat ─────────────────────────────────────────────
 
   testWidgets('chat muestra el mensaje con el nombre del autor', (tester) async {
     await pumpGame(tester);

@@ -84,7 +84,6 @@ class _MatchmakingScreenState extends State<MatchmakingScreen> {
 
   Future<void> _init() async {
     final nickname = await _userStore.getNickname();
-    final token = await _userStore.getToken();
     final stats = await _userStore.getStats();
     if (!mounted) return;
     setState(() {
@@ -95,6 +94,10 @@ class _MatchmakingScreenState extends State<MatchmakingScreen> {
     });
 
     if (widget.socket == null && nickname != null) {
+      // Arranque con sesión guardada: mandar el token propio o el servidor
+      // respondería nickname_taken con nuestro propio nombre.
+      final token = await _userStore.getToken();
+      if (!mounted) return;
       _socket.connect(nickname, token: token);
     } else if (nickname != null) {
       // Socket ya conectado (pasado desde LoginScreen o GameScreen): solicitar matchmaking
@@ -155,7 +158,9 @@ class _MatchmakingScreenState extends State<MatchmakingScreen> {
     switch (message['type']) {
       case 'auth_ok':
         final token = message['token'];
-        if (token is String) _userStore.saveToken(token);
+        if (token is String) {
+          _userStore.saveToken(token);
+        }
         final wins = (message['wins'] as num?)?.toInt() ?? 0;
         final losses = (message['losses'] as num?)?.toInt() ?? 0;
         final draws = (message['draws'] as num?)?.toInt() ?? 0;
@@ -203,7 +208,8 @@ class _MatchmakingScreenState extends State<MatchmakingScreen> {
           ),
         );
       case 'auth_error':
-        // Token inválido o sesión expirada: volver al login
+      case 'nickname_taken':
+        // Sesión inválida o nombre tomado: volver al login sin quedarse varado.
         _stopMatchmakingTimeout();
         _stopScorpyRotation();
         _socketHandedOff = true;
@@ -218,7 +224,6 @@ class _MatchmakingScreenState extends State<MatchmakingScreen> {
   }
 
   Future<void> _logout() async {
-    // Desconectar socket y limpiar sesión guardada
     _socketHandedOff = true;
     _stopMatchmakingTimeout();
     _socket.dispose();

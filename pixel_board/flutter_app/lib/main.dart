@@ -52,11 +52,9 @@ class _StartRouterState extends State<_StartRouter> {
 
   Future<void> _checkSession() async {
     final nickname = await _userStore.getNickname();
-    final token = await _userStore.getToken();
     if (!mounted) return;
 
-    if (nickname != null && nickname.isNotEmpty && token != null && token.isNotEmpty) {
-      // Sesión válida guardada: ir directo al matchmaking (reconexión con token)
+    if (nickname != null && nickname.isNotEmpty) {
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
           builder: (_) => MatchmakingScreen(socket: widget.socket),

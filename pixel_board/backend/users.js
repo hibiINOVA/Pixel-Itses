@@ -1,31 +1,9 @@
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 
 /**
- * Gestión de usuarios: autenticación + estadísticas de juego.
- * Identidad: el nickname es la clave única. Token = credencial de sesión.
+ * Gestión de usuarios: identidad por nickname únicamente.
+ * No hay contraseña. El token es credencial de sesión.
  */
-
-function hashPassword(password) {
-  const salt = randomBytes(16).toString('hex');
-  const hash = scryptSync(password, salt, 64).toString('hex');
-  return `${salt}:${hash}`;
-}
-
-function verifyPassword(password, stored) {
-  if (!stored) return false;
-  const [salt, hash] = stored.split(':');
-  const testHash = scryptSync(password, salt, 64).toString('hex');
-  return timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(testHash, 'hex'));
-}
-
-function isStrongPassword(p) {
-  if (typeof p !== 'string' || p.length < 8 || p.length > 64) return false;
-  if (!/[A-Z]/.test(p)) return false;
-  if (!/[a-z]/.test(p)) return false;
-  if (!/[0-9]/.test(p)) return false;
-  if (!/[!@#$%^&*()_\-]/.test(p)) return false;
-  return true;
-}
 
 class Users {
   constructor({ onPersist } = {}) {
@@ -41,44 +19,13 @@ class Users {
     return this.records.get(nickname) ?? null;
   }
 
-  register(nickname, password) {
-    const existing = this.records.get(nickname);
-    if (existing) return { ok: false, error: 'taken' };
-    if (!password || !isStrongPassword(password)) {
-      return { ok: false, error: 'weak_password' };
-    }
-    const token = randomBytes(16).toString('hex');
-    const passwordHash = hashPassword(password);
-    const user = {
-      nickname,
-      token,
-      passwordHash,
-      wins: 0,
-      losses: 0,
-      draws: 0,
-    };
-    this.records.set(nickname, user);
-    this._persist(user);
-    return { ok: true, token };
-  }
-
-  login(nickname, password) {
-    const user = this.records.get(nickname);
-    if (!user) return { ok: false, error: 'not_found' };
-    if (!user.passwordHash) return { ok: false, error: 'no_password' };
-    if (!verifyPassword(password, user.passwordHash)) {
-      return { ok: false, error: 'wrong_password' };
-    }
-    return { ok: true, token: user.token };
-  }
-
-  getOrCreate(nickname, token) {
+  getOrCreate(nickname) {
     let user = this.records.get(nickname);
     if (!user) {
+      const token = randomBytes(16).toString('hex');
       user = {
         nickname,
         token,
-        passwordHash: null,
         wins: 0,
         losses: 0,
         draws: 0,
@@ -97,8 +44,8 @@ class Users {
 
   recordGame(winner, loser) {
     if (winner === 'tie') {
-      const wUser = this.records.get(loser);
-      if (wUser) { wUser.draws++; this._persist(wUser); }
+      const lUser = this.records.get(loser);
+      if (lUser) { lUser.draws++; this._persist(lUser); }
       return;
     }
     const wUser = this.records.get(winner);

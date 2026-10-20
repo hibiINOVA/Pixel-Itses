@@ -1,8 +1,6 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Guarda la sesión local (shared_preferences): el nickname registrado
-/// y el token secreto que el backend entregó al registrarlo. El token
-/// permite volver a entrar con el mismo nombre sin que lo rechacen.
+/// Guarda la sesión local (shared_preferences): nickname + token del jugador.
 class UserStore {
   static const _keyNickname = 'nickname';
   static const _keyToken = 'token';

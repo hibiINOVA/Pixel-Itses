@@ -15,10 +15,9 @@ abstract class SocketClient {
   Stream<Map<String, dynamic>> get messages;
   Stream<SocketStatus> get status;
 
-  void connect(String nickname, {String? token, String? password, bool isRegister = false});
-  void sendHello(String nickname, {String? token, String? password});
+  void connect(String nickname, {String? token});
+  void sendHello(String nickname);
   void sendChat(String text);
-  void sendRegister(String nickname, String password);
   void sendPaint({required int x, required int y, required String color, required String nickname});
   void sendFinishTurn();
   void sendNextGame();
@@ -44,11 +43,9 @@ class WebsocketService implements SocketClient {
 
   String? _nickname;
   String? _token;
-  String? _password;
   Timer? _reconnectTimer;
   int _attempt = 0;
   bool _disposed = false;
-  bool _isRegister = false;
 
   @override
   Stream<Map<String, dynamic>> get messages => _messages.stream;
@@ -57,11 +54,9 @@ class WebsocketService implements SocketClient {
   Stream<SocketStatus> get status => _status.stream;
 
   @override
-  void connect(String nickname, {String? token, String? password, bool isRegister = false}) {
+  void connect(String nickname, {String? token}) {
     _nickname = nickname;
     _token = token;
-    _password = password;
-    _isRegister = isRegister;
     _open();
   }
 
@@ -76,11 +71,7 @@ class WebsocketService implements SocketClient {
       if (_disposed) return;
       _attempt = 0;
       _setStatus(SocketStatus.conectado);
-      if (_isRegister && _password != null) {
-        sendRegister(_nickname!, _password!);
-      } else {
-        sendHello(_nickname!, token: _token, password: _password);
-      }
+      sendHello(_nickname!);
     }).catchError((Object _) {
       _handleDisconnect();
     });
@@ -89,7 +80,14 @@ class WebsocketService implements SocketClient {
       (data) {
         if (data is String) {
           try {
-            _messages.add(jsonDecode(data) as Map<String, dynamic>);
+            final message = jsonDecode(data) as Map<String, dynamic>;
+            // Adoptar el token más reciente del servidor para que la
+            // próxima reconexión pueda reclamar el mismo nickname.
+            if (message['type'] == 'auth_ok' &&
+                message['token'] is String) {
+              _token = message['token'] as String;
+            }
+            _messages.add(message);
           } on FormatException {
             // Mensaje no es JSON válido, ignorar
           }
@@ -120,23 +118,17 @@ class WebsocketService implements SocketClient {
   }
 
   @override
-  void sendHello(String nickname, {String? token, String? password}) {
+  void sendHello(String nickname) {
     _channel?.sink.add(jsonEncode({
       'type': 'hello',
       'nickname': nickname,
-      ...?token == null ? null : {'token': token},
-      ...?password == null ? null : {'password': password},
+      if (_token != null) 'token': _token,
     }));
   }
 
   @override
   void sendChat(String text) {
     _channel?.sink.add(jsonEncode({'type': 'chat', 'text': text}));
-  }
-
-  @override
-  void sendRegister(String nickname, String password) {
-    _channel?.sink.add(jsonEncode({'type': 'register', 'nickname': nickname, 'password': password}));
   }
 
   @override

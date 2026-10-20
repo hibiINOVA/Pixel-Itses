@@ -6,15 +6,11 @@ import 'package:google_fonts/google_fonts.dart';
 import '../services/user_store.dart';
 import '../services/websocket_service.dart';
 import '../widgets/retro_button.dart';
-import '../widgets/retro_password_field.dart';
 import '../widgets/retro_text_field.dart';
 import '../widgets/scorpy_mascot.dart';
 import '../widgets/scorpy_painter.dart';
 import 'matchmaking_screen.dart';
-import 'register_screen.dart';
 
-/// Login con username + password: al tocar UNIRSE se abre una conexión
-/// y se espera la respuesta del backend.
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key, this.socket});
 
@@ -29,9 +25,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   final UserStore _userStore = UserStore();
   final TextEditingController _nicknameController = TextEditingController();
-  final TextEditingController _passwordController = TextEditingController();
   final FocusNode _nicknameFocus = FocusNode();
-  final FocusNode _passwordFocus = FocusNode();
 
   bool _checking = false;
   String? _error;
@@ -40,7 +34,6 @@ class _LoginScreenState extends State<LoginScreen> {
   Timer? _timeoutTimer;
   bool _resolved = false;
 
-  // ── Scorpy ─────────────────────────────────────────────────────────
   ScorpyState _scorpyState = ScorpyState.idle;
   String _scorpyMessage = '¡BIENVENIDO! EL JUEGO ESTÁ EN VIVO.';
 
@@ -50,21 +43,12 @@ class _LoginScreenState extends State<LoginScreen> {
     _nicknameController.addListener(() {
       if (_error != null) setState(() => _error = null);
     });
-    _passwordController.addListener(() {
-      if (_error != null) setState(() => _error = null);
-    });
     _nicknameFocus.addListener(_onFocusChange);
-    _passwordFocus.addListener(_onFocusChange);
   }
 
   void _onFocusChange() {
     if (_checking) return;
-    if (_passwordFocus.hasFocus) {
-      setState(() {
-        _scorpyState = ScorpyState.tipOn;
-        _scorpyMessage = '¡CONTRASEÑA: AL MENOS 8 CARACTERES!';
-      });
-    } else if (_nicknameFocus.hasFocus) {
+    if (_nicknameFocus.hasFocus) {
       setState(() {
         _scorpyState = ScorpyState.idle;
         _scorpyMessage = 'EJEMPLO: SUPERPIXEL!';
@@ -78,15 +62,10 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _updateScorpyForError(String error) {
-    if (error.contains('PASSWORD INCORRECTO')) {
+    if (error.contains('NOMBRE YA USADO')) {
       setState(() {
         _scorpyState = ScorpyState.tipOn;
-        _scorpyMessage = '¿OLVIDASTE TU CLAVE? HACÉ CLIC EN CREAR CUENTA';
-      });
-    } else if (error.contains('CUENTA NO EXISTE')) {
-      setState(() {
-        _scorpyState = ScorpyState.tipOn;
-        _scorpyMessage = 'CREALA PRIMERO → CREAR CUENTA';
+        _scorpyMessage = 'NOMBRE OCUPADO, ELEGÍ OTRO';
       });
     } else {
       setState(() {
@@ -98,7 +77,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _joinBoard() async {
     final nickname = _nicknameController.text.trim();
-    final password = _passwordController.text;
 
     if (nickname.isEmpty) {
       setState(() => _error = 'INGRESÁ TU USUARIO');
@@ -110,18 +88,6 @@ class _LoginScreenState extends State<LoginScreen> {
     }
     if (!RegExp(r'^[a-zA-Z0-9_\- ]+$').hasMatch(nickname)) {
       setState(() => _error = 'CARACTERES INVÁLIDOS EN USUARIO');
-      return;
-    }
-    if (password.isEmpty) {
-      setState(() => _error = 'INGRESÁ TU PASSWORD');
-      return;
-    }
-    if (password.length < 3) {
-      setState(() => _error = 'PASSWORD MUY CORTO');
-      return;
-    }
-    if (password.length > 64) {
-      setState(() => _error = 'PASSWORD MUY LARGO');
       return;
     }
     if (_checking) return;
@@ -156,36 +122,44 @@ class _LoginScreenState extends State<LoginScreen> {
               wins: wins, losses: losses, draws: draws);
         case 'nickname_taken':
           _resolved = true;
-          _finishCheck('NOMBRE YA USADO · PROBÁ OTRO');
+          _timeoutTimer?.cancel();
+          _messagesSub?.cancel();
+          _socket?.dispose();
+          _socket = null;
+          if (!mounted) return;
+          setState(() {
+            _checking = false;
+            _error = 'NOMBRE YA USADO · ELEGÍ OTRO';
+          });
+          _updateScorpyForError(_error!);
         case 'auth_error':
           _resolved = true;
-          final err = message['error'] as String?;
-          _finishCheck(_authErrorText(err));
+          _timeoutTimer?.cancel();
+          _messagesSub?.cancel();
+          _socket?.dispose();
+          _socket = null;
+          if (!mounted) return;
+          setState(() {
+            _checking = false;
+            _error = 'ERROR DE CONEXIÓN';
+          });
+          _updateScorpyForError(_error!);
       }
     });
 
-    socket.connect(nickname, password: password);
-  }
-
-  String _authErrorText(String? error) {
-    switch (error) {
-      case 'wrong_password':
-        return 'PASSWORD INCORRECTO';
-      case 'not_found':
-        return 'CUENTA NO EXISTE · CREALA PRIMERO';
-      case 'invalid_password':
-        return 'PASSWORD INVÁLIDO';
-      case 'taken':
-        return 'NOMBRE YA USADO · PROBÁ OTRO';
-      default:
-        return 'ERROR DE AUTENTICACIÓN';
-    }
+    // Reusar el token guardado solo si corresponde al mismo nickname,
+    // así el servidor reconoce la reconexión en vez de devolver nickname_taken.
+    final storedNickname = await _userStore.getNickname();
+    final storedToken = await _userStore.getToken();
+    final token = storedNickname == nickname ? storedToken : null;
+    socket.connect(nickname, token: token);
   }
 
   Future<void> _enterBoard(String nickname, String? token,
       {int wins = 0, int losses = 0, int draws = 0}) async {
     await _userStore.saveNickname(nickname);
     if (token != null) {
+      // Credencial de reconexión: sin ella el servidor niega el nickname propio.
       await _userStore.saveToken(token);
     }
     await _userStore.saveStats(wins: wins, losses: losses, draws: draws);
@@ -195,7 +169,6 @@ class _LoginScreenState extends State<LoginScreen> {
       _scorpyState = ScorpyState.celebrating;
       _scorpyMessage = '¡BIENVENIDO AL JUEGO!';
     });
-    // Pequeña pausa para que se vea la animación antes de navegar
     await Future.delayed(const Duration(milliseconds: 800));
     if (!mounted) return;
     final socketToPass = _socket;
@@ -228,29 +201,16 @@ class _LoginScreenState extends State<LoginScreen> {
       _socket?.dispose();
     }
     _nicknameController.dispose();
-    _passwordController.dispose();
+    _nicknameFocus.dispose();
     super.dispose();
-  }
-
-  bool _isUserError(String err) {
-    return err.contains('USUARIO') ||
-        err.contains('NOMBRE') ||
-        err.contains('CUENTA NO EXISTE');
-  }
-
-  bool _isPasswordError(String err) {
-    return err.contains('PASSWORD');
   }
 
   @override
   Widget build(BuildContext context) {
-    final String? userError =
-        _error != null && _isUserError(_error!) ? _error : null;
-    final String? passwordError =
-        _error != null && _isPasswordError(_error!) ? _error : null;
     final String? generalError = _error != null &&
-            !_isUserError(_error!) &&
-            !_isPasswordError(_error!)
+            !_error!.contains('NOMBRE YA USADO') &&
+            !_error!.contains('USUARIO') &&
+            !_error!.contains('CARACTERES')
         ? _error
         : null;
 
@@ -304,22 +264,13 @@ class _LoginScreenState extends State<LoginScreen> {
                         hint: 'USUARIO',
                         controller: _nicknameController,
                         onSubmitted: (_) => _joinBoard(),
+                        focusNode: _nicknameFocus,
                       ),
-                      if (userError != null) ...[
+                      if (_error != null && _error!.contains('NOMBRE YA USADO')) ...[
                         const SizedBox(height: 8),
-                        _RetroAlertBox(text: userError),
+                        _RetroAlertBox(text: _error!),
                       ],
                       const SizedBox(height: 16),
-                      RetroPasswordField(
-                        hint: 'PASSWORD',
-                        controller: _passwordController,
-                        onSubmitted: (_) => _joinBoard(),
-                      ),
-                      if (passwordError != null) ...[
-                        const SizedBox(height: 8),
-                        _RetroAlertBox(text: passwordError),
-                      ],
-                      const SizedBox(height: 28),
                       if (_checking)
                         const SizedBox(
                           width: 40,
@@ -332,28 +283,9 @@ class _LoginScreenState extends State<LoginScreen> {
                       else ...[
                         RetroButton(label: 'UNIRSE', onPressed: _joinBoard),
                         const SizedBox(height: 16),
-                        GestureDetector(
-                          key: const Key('crear_cuenta_link'),
-                          onTap: () => Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => RegisterScreen(
-                                socket: widget.socket,
-                              ),
-                            ),
-                          ),
-                          child: Text(
-                            'CREAR CUENTA',
-                            style: GoogleFonts.pressStart2p(
-                              fontSize: 10,
-                              color: const Color(0xFFFFF3D6),
-                              decoration: TextDecoration.underline,
-                              decorationColor: const Color(0xFFFFF3D6),
-                            ),
-                          ),
-                        ),
                         if (generalError != null) ...[
-                          const SizedBox(height: 20),
                           _RetroAlertBox(text: generalError),
+                          const SizedBox(height: 20),
                         ],
                       ],
                     ],
@@ -361,7 +293,6 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
               ),
             ),
-            // Scorpy en esquina inferior derecha
             Positioned(
               bottom: 16,
               right: 16,

@@ -326,48 +326,25 @@ wss.on('connection', (ws) => {
       if (!nickname) return;
 
       const token = typeof message.token === 'string' ? message.token.slice(0, 64) : null;
-      const password = typeof message.password === 'string' ? message.password.slice(0, 64) : null;
       const existing = users.find(nickname);
 
-      if (existing && password) {
-        const result = users.login(nickname, password);
-        if (result.ok) {
+      if (existing) {
+        // Reconexión con token válido → bienvenido de vuelta
+        if (token && existing.token === token) {
           wsToNickname.set(ws, nickname);
           const stats = users.getStats(nickname);
-          send(ws, { type: 'auth_ok', token: result.token, ...stats });
+          send(ws, { type: 'auth_ok', token, ...stats });
           return;
         }
-        send(ws, { type: 'auth_error', error: result.error });
+        // Sin token o token inválido → nombre ya en uso
+        send(ws, { type: 'nickname_taken', nickname });
         return;
       }
 
-      if (token && existing && token === existing.token) {
-        wsToNickname.set(ws, nickname);
-        const stats = users.getStats(nickname);
-        send(ws, { type: 'auth_ok', token, ...stats });
-        return;
-      }
-
-      if (!existing) {
-        send(ws, { type: 'auth_error', error: 'not_found' });
-        return;
-      }
-
-      send(ws, { type: 'nickname_taken', nickname });
-      return;
-    }
-
-    if (message.type === 'register') {
-      const nickname = normalizeNickname(message.nickname);
-      if (!nickname) return;
-      const password = typeof message.password === 'string' ? message.password.slice(0, 64) : null;
-      const result = users.register(nickname, password);
-      if (!result.ok) {
-        send(ws, { type: 'auth_error', error: result.error });
-        return;
-      }
+      // Nuevo usuario
+      const user = users.getOrCreate(nickname);
       wsToNickname.set(ws, nickname);
-      send(ws, { type: 'auth_ok', token: result.token, wins: 0, losses: 0, draws: 0 });
+      send(ws, { type: 'auth_ok', token: user.token, ...users.getStats(nickname) });
       return;
     }
 

@@ -4,11 +4,11 @@
 
 Two-player memory-draw-and-compare game. `pixel_board/{backend, flutter_app}`. Root `README.md` has human run instructions.
 
-**Working tree is mid-refactor and uncommitted.** Passwords and the whole `register` flow were just deleted (see "Auth model"). Trust the code, not the docs:
+The password/`register` flow was deleted (see "Auth model") and **production is live** (see "Deployment"). Trust the code, not the docs:
 
-- `README.md` is STALE — documents register/passwords, lists `register_screen.dart` (deleted), claims 25 tests (actual: 19), and claims a v1→v3 DB migration that `db.js` no longer performs (it's only `CREATE TABLE IF NOT EXISTS`). Don't "restore" the password flow from it.
+- `README.md` is STALE — documents register/passwords, lists `register_screen.dart` (deleted), claims 25 tests (actual: 23), and claims a v1→v3 DB migration that `db.js` no longer performs (it's only `CREATE TABLE IF NOT EXISTS`). Don't "restore" the password flow from it.
 - `pixel-board-spec.md` is older still: it specs a *different* game (r/place-style shared canvas, 5-pixel/2-min cooldowns, `canvas_snapshot`). Ignore its architecture entirely.
-- The local dev `pixel_board.sqlite` (gitignored) was created by the old schema, so it still has a leftover nullable `password_hash` column and ~13 pre-existing users. Harmless (new INSERTs omit the column), but it's what makes the lockout bug below trigger immediately.
+- The local dev `pixel_board.sqlite` (gitignored) was created by the old schema, so it still has a leftover nullable `password_hash` column and ~13 pre-existing users. Harmless (new INSERTs omit the column); production uses its own fresh DB (see "Deployment").
 
 ## Stack
 
@@ -25,7 +25,7 @@ Env vars: `PORT` (3000), `DB_PATH` (`pixel_board.sqlite`), `PREVIEW_SECONDS` (15
 
 Frontend (`pixel_board/flutter_app/`): `flutter pub get`, `flutter analyze`, `flutter test`, `flutter run -d chrome`, `flutter build web`.
 
-Verify in this order: `flutter analyze` → `flutter test` → `npm run smoke` (the two suites are independent; don't need both to pass to iterate on one). There is no CI or pre-commit config — these three commands are the entire verification surface.
+Verify in this order: `flutter analyze` → `flutter test` → `npm run smoke` (the two suites are independent; don't need both to pass to iterate on one). CI is only `.github/workflows/pages.yml` (analyze + test + build + deploy on push to `main`) — it does not run the backend smoke; these three local commands remain the full verification surface.
 `flutter build web` takes ~2.5 min and looks hung — give it ≥300s.
 
 ## Auth model (changed recently — read this before touching auth)
@@ -38,13 +38,15 @@ There is **no password and no register**. `users.js` has no `register`/`login`; 
 
 The server never sends `auth_error` — only `auth_ok` and `nickname_taken`. Client still handles `auth_error` in `login_screen.dart` and `matchmaking_screen.dart`; that branch is dead.
 
-### Known live bug: returning players are locked out
+### Token flow (the old lockout bug is FIXED — keep this intact)
 
-`UserStore` no longer persists the token (`saveToken`/`getToken` deleted) and `sendHello` never sends one, but the server requires it to reclaim an existing nickname. Since users persist in SQLite, a returning player gets `nickname_taken` for their own name on:
-- `WebsocketService._handleDisconnect` auto-reconnect (sends `hello` with no token, server keeps the record)
-- the `_StartRouter` fast-path in `main.dart` (nickname saved ⇒ skip login ⇒ connect ⇒ `nickname_taken`)
+The server denies an existing nickname without its token (`nickname_taken`), so the client must persist and resend it:
 
-Worse, `matchmaking_screen.dart` handles `auth_error` but **not** `nickname_taken`, so that path strands the player on the matchmaking screen until the matchmaking timeout. If you touch auth, the fix is to persist the token again and send it on reconnect — don't paper over it by deleting the duplicate-name check, which is what makes names unique.
+- `UserStore.saveToken`/`getToken` persist it in SharedPreferences (cleared by `clearSession`).
+- `login_screen._enterBoard` saves the token from `auth_ok`; `connect(nickname, token:)` only reuses a stored token when it matches the typed nickname.
+- `WebsocketService` stores `_token` and includes it in **every** `hello` — including `_handleDisconnect` auto-reconnect — and adopts the freshest token from any incoming `auth_ok`.
+- The `_StartRouter` fast-path (`matchmaking_screen._init`, socket==null branch) sends `getToken()` with its connect.
+- `matchmaking_screen` handles `nickname_taken` like `auth_error` (clearSession → back to login). Never remove that case or the duplicate-name check server-side — uniqueness is what makes nicknames work as identity.
 
 Dead code left behind: `lib/widgets/retro_password_field.dart` has zero references.
 
@@ -75,6 +77,18 @@ Server → client: `auth_ok {token, wins, losses, draws}`, `matchmaking_status {
 - `npm run smoke` is hermetic — random port and a per-PID temp SQLite in `tmpdir()`, cleaned up itself. Safe to re-run; needs no server running and no clean state. Don't reintroduce a dependency on a manually started server.
 - Smoke test must `ws.close()` earlier connections (e.g. `a.ws.close()`, `dup.ws.close()`) before the matchmaking section, or stale sockets sit in the matcher queue and corrupt pairing. It also reuses fixed nicknames (`player1`, `alice`, `bob`) that only work because the DB is fresh each run — a new check added there must either use a fresh nickname or tolerate `nickname_taken`.
 - `WebsocketService` retries with exponential backoff capped at 8 s and never settles → widget tests must use explicit `pump(duration)` steps, **never** `pumpAndSettle`.
+- Route animations don't advance on zero-duration `pump()` calls: after a navigation (e.g. `pushAndRemoveUntil` in the `nickname_taken` handler) old routes stay mounted until you pump real durations (~400 ms + ~1000 ms) — `findsOneWidget`/`findsNothing` on screens fails otherwise.
 - Widget tests: `SharedPreferences.setMockInitialValues({})` in `setUp`; emit via `FakeSocket` only after the screen's listener is attached (add pump delays); `_StartRouter._checkSession()` is async (needs 3 pumps after `pumpWidget`); `LoginScreen._enterBoard` has `Future.delayed(800ms)` for Scorpy's celebration (pump ~900 ms).
 - `GameScreen._myNickname` is inferred, not sent: if `player1 == opponent` the user is `player2`, else `player1`. Result mapping in `game_results` depends on it.
 - `PixelCanvas.onTapPixel` is `void Function(int x, int y)`, not single-arg.
+
+## Deployment (production)
+
+- **Front**: GitHub Pages, auto-deploy on push to `main` via `.github/workflows/pages.yml` (analyze + test + build + deploy). URL: `https://hibiinoval.github.io/Pixel-Itses/`. The build bakes in `--base-href "/Pixel-Itses/"` and `--dart-define=WS_URL=wss://pasty-luckily-bagpipe.ngrok-free.dev` — if the tunnel domain changes, that line in the workflow is the only copy to update (no repo variable).
+- Pages must be enabled once in Settings → Pages → Source **"GitHub Actions"**: the workflow cannot enable it itself (`enablement` needs admin; `GITHUB_TOKEN` gets 403 "Must have admin rights").
+- **Back + tunnel**: `docker compose up -d` from `pixel_board/` (reads `pixel_board/.env` for the ngrok token/domain — gitignored, never commit). Two services, both `restart: always` (they come back alone on boot because `docker.service` is enabled):
+  - `backend`: Dockerfile build (the smoke test runs inside the build as a gate), published **only on `127.0.0.1:3000`** — nothing exposed to the LAN; the tunnel is the only way in.
+  - `tunnel`: official `ngrok/ngrok` image → `wss://pasty-luckily-bagpipe.ngrok-free.dev` forwards to `backend:3000` (WebSockets work over ngrok free; no interstitial on the `wss` handshake).
+- Production DB: `pixel_board/data/pixel_board.sqlite` (bind volume, gitignored) — a fresh DB, not the dev one.
+- Verify: a `hello` over `wss://<domain>` must return `auth_ok`. ngrok writes nothing to stdout — `docker logs pixel-itses-tunnel` is only useful for startup errors.
+- The PC must stay on; that's the whole hosting story (ngrok free plan has usage limits).

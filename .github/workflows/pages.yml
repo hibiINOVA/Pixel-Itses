@@ -20,11 +20,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Habilita Pages con source "GitHub Actions" si todavía no está activo
-      - uses: actions/configure-pages@v5
-        with:
-          enablement: true
-
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.44.0'
